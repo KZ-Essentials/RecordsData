@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Data.Sqlite;
 using System.IO;
 using System.Timers;
@@ -16,7 +17,7 @@ namespace RecordsData;
 public class RecordsData : BasePlugin
 {
     public override string ModuleName => "RecordsData";
-    public override string ModuleVersion => "1.0.0";
+    public override string ModuleVersion => "1.0.1";
     public override string ModuleAuthor => "Local-KZ";
 
     private string _gitHubToken = string.Empty;
@@ -76,7 +77,6 @@ public class RecordsData : BasePlugin
         _httpClient?.Dispose();
     }
 
-    // --- Загрузка конфигурации ---
     private void LoadConfig()
     {
         string configFullPath = Path.Combine(GetServerRoot(), ConfigRelativePath);
@@ -104,12 +104,11 @@ public class RecordsData : BasePlugin
         if (config == null)
             throw new Exception("Failed to parse config.json");
 
-        // Разбор github_repo
         string[] parts = config.GithubRepo?.Split('/') ?? Array.Empty<string>();
         if (parts.Length != 2 || string.IsNullOrEmpty(parts[0]) || string.IsNullOrEmpty(parts[1]))
             throw new Exception("Invalid github_repo format. Expected 'owner/repo'.");
 
-        _gitHubRepoOwner = parts[0]!;   // после проверки null быть не может
+        _gitHubRepoOwner = parts[0]!;
         _gitHubRepoName = parts[1]!;
 
         _gitHubToken = config.GithubToken ?? throw new Exception("github_token is missing in config");
@@ -123,13 +122,11 @@ public class RecordsData : BasePlugin
         return Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "..", ".."));
     }
 
-    // --- Команды ---
     private void OnSyncCommand(CCSPlayerController? player, CommandInfo command)
     {
         Task.Run(() => SyncAllRecords(player));
     }
 
-    // --- Watcher ---
     private void OnDatabaseChanged(object sender, FileSystemEventArgs e)
     {
         if (_pendingSync) return;
@@ -147,10 +144,13 @@ public class RecordsData : BasePlugin
         _debounceTimer.Start();
     }
 
-    // --- Полная синхронизация (records + players) ---
     private async Task SyncAllRecords(CCSPlayerController? player)
     {
-        if (_isSyncing) return;
+        if (_isSyncing)
+        {
+            Server.NextFrame(() => SendResult(player, false));
+            return;
+        }
         _isSyncing = true;
 
         try
@@ -158,7 +158,7 @@ public class RecordsData : BasePlugin
             var allRecords = GetAllRecords();
             if (allRecords.Count == 0)
             {
-                SendMessage(player, "ℹ️ No records found in database.");
+                Server.NextFrame(() => SendResult(player, false));
                 return;
             }
 
@@ -179,34 +179,34 @@ public class RecordsData : BasePlugin
             bool recordsSuccess = await ReplaceAllRecordsOnGitHub(gitRecords);
             if (!recordsSuccess)
             {
-                SendMessage(player, "Failed to replace records.json on GitHub.");
+                Server.NextFrame(() => SendResult(player, false));
                 return;
             }
 
             bool playersSuccess = await UpdatePlayersFileInternal(player);
             if (!playersSuccess)
             {
-                SendMessage(player, "Records synced, but failed to update players.json.");
-            }
-            else
-            {
-                SendMessage(player, $"Synced all {allRecords.Count} records and players data.");
+                Server.NextFrame(() => SendResult(player, false));
+                return;
             }
 
             string maxCreated = allRecords.Max(r => r.CreatedRaw);
             _lastSentCreated = maxCreated;
             SaveLastSyncCreated();
+
+            Server.NextFrame(() => SendResult(player, true));
         }
         catch (Exception ex)
         {
-            SendMessage(player, $"Sync error: {ex.Message}");
+            Console.WriteLine($"[RecordsData] Sync error: {ex.Message}");
+            Server.NextFrame(() => SendResult(player, false));
         }
         finally
         {
             _isSyncing = false;
         }
     }
-
+    
     private async Task SyncNewRecord(CCSPlayerController? player)
     {
         if (_isSyncing) return;
@@ -217,31 +217,31 @@ public class RecordsData : BasePlugin
             var newRecord = GetLatestRecord();
             if (newRecord == null)
             {
-                SendMessage(player, "No valid records found in database.");
+                Console.WriteLine("[RecordsData] No valid records found in database.");
                 return;
             }
 
             if (string.Compare(newRecord.CreatedRaw, _lastSentCreated, StringComparison.Ordinal) <= 0)
             {
-                SendMessage(player, "No new records since last sync.");
+                Console.WriteLine("[RecordsData] No new records since last sync.");
                 return;
             }
 
             bool recordSuccess = await AddRecordToGitHub(newRecord);
             if (!recordSuccess)
             {
-                SendMessage(player, $"Failed to add record for {newRecord.PlayerName} on {newRecord.MapName} {newRecord.Course}");
+                Console.WriteLine($"[RecordsData] Failed to add record for {newRecord.PlayerName} on {newRecord.MapName} {newRecord.Course}");
                 return;
             }
 
             bool playerUpdateSuccess = await UpdatePlayerInGitHub(newRecord.SteamId, newRecord.PlayerName);
             if (!playerUpdateSuccess)
             {
-                SendMessage(player, "Record added, but failed to update player info.");
+                Console.WriteLine("[RecordsData] Record added, but failed to update player info.");
             }
             else
             {
-                SendMessage(player, $"Synced record {newRecord.PlayerName} on {newRecord.MapName} {newRecord.Course} ({newRecord.Mode})");
+                Console.WriteLine($"[RecordsData] Synced record {newRecord.PlayerName} on {newRecord.MapName} {newRecord.Course} ({newRecord.Mode})");
             }
 
             _lastSentCreated = newRecord.CreatedRaw;
@@ -249,13 +249,15 @@ public class RecordsData : BasePlugin
         }
         catch (Exception ex)
         {
-            SendMessage(player, $"Sync error: {ex.Message}");
+            Console.WriteLine($"[RecordsData] Sync error: {ex.Message}");
         }
         finally
         {
             _isSyncing = false;
         }
     }
+
+    // --- Вспомогательные методы для работы с GitHub и БД ---
 
     private async Task<bool> UpdatePlayersFileInternal(CCSPlayerController? player)
     {
@@ -294,9 +296,7 @@ public class RecordsData : BasePlugin
 
             bool success = await ReplacePlayersOnGitHub(playerList);
             if (success)
-            {
                 _playerCache = playerList.ToDictionary(p => p.steamid);
-            }
             return success;
         }
         catch (Exception ex)
@@ -378,9 +378,7 @@ public class RecordsData : BasePlugin
                         string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(base64));
                         var players = JsonSerializer.Deserialize<List<PlayerInfo>>(decoded);
                         if (players != null)
-                        {
                             _playerCache = players.ToDictionary(p => p.steamid);
-                        }
                     }
                 }
             }
@@ -718,15 +716,21 @@ public class RecordsData : BasePlugin
         return $"{seconds}.{ms:D3}";
     }
 
-    private void SendMessage(CCSPlayerController? player, string msg)
+    private void SendResult(CCSPlayerController? player, bool success)
     {
-        if (player != null)
-            player.PrintToChat($" [RecordsData] {msg}");
-        else
-            Console.WriteLine($"[RecordsData] {msg}");
+        if (player == null)
+        {
+            Console.WriteLine($"[RecordsData] Data synchronization {(success ? "complete" : "failed")}");
+            return;
+        }
+
+        string color = success ? $"{ChatColors.Green}" : $"{ChatColors.Red}";
+        string status = success ? "complete" : "failed";
+        player.PrintToChat($" [{ChatColors.Blue}KZ{ChatColors.White}] Data synchronization {color}{status}");
     }
 }
 
+// --- Классы данных ---
 public class RecordInfo
 {
     public string PlayerName { get; set; } = "";
