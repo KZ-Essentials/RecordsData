@@ -17,7 +17,7 @@ public class RecordsData : BasePlugin
 {
     public override string ModuleName => "RecordsData";
     public override string ModuleVersion => "1.0.0";
-    public override string ModuleAuthor => "Yomo3S";
+    public override string ModuleAuthor => "Local-KZ";
 
     private string _gitHubToken = string.Empty;
     private string _gitHubRepoOwner = string.Empty;
