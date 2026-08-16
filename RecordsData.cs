@@ -8,7 +8,6 @@ using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Data.Sqlite;
 using System.IO;
-using System.Timers;
 using System.Linq;
 using System.Xml.Linq;
 
@@ -17,7 +16,7 @@ namespace RecordsData;
 public class RecordsData : BasePlugin
 {
     public override string ModuleName => "RecordsData";
-    public override string ModuleVersion => "1.0.1";
+    public override string ModuleVersion => "1.0.2";
     public override string ModuleAuthor => "Local-KZ";
 
     private string _gitHubToken = string.Empty;
@@ -30,10 +29,6 @@ public class RecordsData : BasePlugin
     private HttpClient? _httpClient;
     private string _lastSentCreated = "";
     private bool _isSyncing = false;
-
-    private FileSystemWatcher? _watcher;
-    private System.Timers.Timer? _debounceTimer;
-    private bool _pendingSync = false;
 
     private Dictionary<string, PlayerInfo> _playerCache = new Dictionary<string, PlayerInfo>();
 
@@ -53,27 +48,12 @@ public class RecordsData : BasePlugin
         LoadLastSyncCreated();
         LoadPlayerCache();
 
-        string fullDbPath = GetDatabasePath();
-        string? dbDirectory = Path.GetDirectoryName(fullDbPath);
-        string dbFileName = Path.GetFileName(fullDbPath);
-        if (Directory.Exists(dbDirectory))
-        {
-            _watcher = new FileSystemWatcher(dbDirectory, dbFileName);
-            _watcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size;
-            _watcher.Changed += OnDatabaseChanged;
-            _watcher.EnableRaisingEvents = true;
-        }
-        else
-        {
-            Console.WriteLine($"[RecordsData] Database directory not found: {dbDirectory}");
-        }
+        Console.WriteLine("[RecordsData] Auto-sync on database changes is DISABLED. Use !sync manually.");
     }
 
     public override void Unload(bool hotReload)
     {
         SaveLastSyncCreated();
-        _watcher?.Dispose();
-        _debounceTimer?.Dispose();
         _httpClient?.Dispose();
     }
 
@@ -125,23 +105,6 @@ public class RecordsData : BasePlugin
     private void OnSyncCommand(CCSPlayerController? player, CommandInfo command)
     {
         Task.Run(() => SyncAllRecords(player));
-    }
-
-    private void OnDatabaseChanged(object sender, FileSystemEventArgs e)
-    {
-        if (_pendingSync) return;
-        _pendingSync = true;
-
-        _debounceTimer?.Stop();
-        _debounceTimer?.Dispose();
-        _debounceTimer = new System.Timers.Timer(2000);
-        _debounceTimer.Elapsed += (s, args) =>
-        {
-            _debounceTimer.Stop();
-            _pendingSync = false;
-            Task.Run(() => SyncNewRecord(null));
-        };
-        _debounceTimer.Start();
     }
 
     private async Task SyncAllRecords(CCSPlayerController? player)
@@ -206,58 +169,6 @@ public class RecordsData : BasePlugin
             _isSyncing = false;
         }
     }
-    
-    private async Task SyncNewRecord(CCSPlayerController? player)
-    {
-        if (_isSyncing) return;
-        _isSyncing = true;
-
-        try
-        {
-            var newRecord = GetLatestRecord();
-            if (newRecord == null)
-            {
-                Console.WriteLine("[RecordsData] No valid records found in database.");
-                return;
-            }
-
-            if (string.Compare(newRecord.CreatedRaw, _lastSentCreated, StringComparison.Ordinal) <= 0)
-            {
-                Console.WriteLine("[RecordsData] No new records since last sync.");
-                return;
-            }
-
-            bool recordSuccess = await AddRecordToGitHub(newRecord);
-            if (!recordSuccess)
-            {
-                Console.WriteLine($"[RecordsData] Failed to add record for {newRecord.PlayerName} on {newRecord.MapName} {newRecord.Course}");
-                return;
-            }
-
-            bool playerUpdateSuccess = await UpdatePlayerInGitHub(newRecord.SteamId, newRecord.PlayerName);
-            if (!playerUpdateSuccess)
-            {
-                Console.WriteLine("[RecordsData] Record added, but failed to update player info.");
-            }
-            else
-            {
-                Console.WriteLine($"[RecordsData] Synced record {newRecord.PlayerName} on {newRecord.MapName} {newRecord.Course} ({newRecord.Mode})");
-            }
-
-            _lastSentCreated = newRecord.CreatedRaw;
-            SaveLastSyncCreated();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[RecordsData] Sync error: {ex.Message}");
-        }
-        finally
-        {
-            _isSyncing = false;
-        }
-    }
-
-    // --- Вспомогательные методы для работы с GitHub и БД ---
 
     private async Task<bool> UpdatePlayersFileInternal(CCSPlayerController? player)
     {
@@ -488,62 +399,6 @@ public class RecordsData : BasePlugin
         return records;
     }
 
-    private RecordInfo? GetLatestRecord()
-    {
-        string fullDbPath = GetDatabasePath();
-        if (!File.Exists(fullDbPath)) return null;
-
-        using var connection = new SqliteConnection($"Data Source={fullDbPath}");
-        connection.Open();
-
-        string query = @"
-            SELECT 
-                p.Alias AS playername,
-                p.SteamID64 AS steamid,
-                m.Name AS mapname,
-                mc.Name AS course,
-                mc.StageID AS courseid,
-                md.ShortName AS mode,
-                t.RunTime AS time,
-                t.Teleports AS teleports,
-                t.Created AS created_raw,
-                strftime('%H:%M:%S %d.%m.%Y', datetime(t.Created, '+3 hours')) AS created_formatted
-            FROM Times t
-            JOIN Players p ON t.SteamID64 = p.SteamID64
-            JOIN MapCourses mc ON t.MapCourseID = mc.ID
-            JOIN Maps m ON mc.MapID = m.ID
-            JOIN Modes md ON t.ModeID = md.ID
-            WHERE t.RunTime > 0
-            ORDER BY t.Created DESC
-            LIMIT 1";
-
-        using var cmd = new SqliteCommand(query, connection);
-        using var reader = cmd.ExecuteReader();
-        if (reader.Read())
-        {
-            double time = reader.GetDouble(6);
-            string createdRaw = reader.GetString(8);
-            string createdFormatted = reader.IsDBNull(9) ? "" : reader.GetString(9);
-
-            var rec = new RecordInfo
-            {
-                PlayerName = reader.GetString(0),
-                SteamId = reader.GetString(1),
-                MapName = reader.GetString(2),
-                Course = reader.GetString(3),
-                CourseId = reader.GetInt32(4),
-                Mode = reader.GetString(5),
-                Time = time,
-                Teleports = reader.GetInt32(7),
-                CreatedRaw = createdRaw,
-                CreatedFormatted = createdFormatted,
-                Runtime = FormatTime(time)
-            };
-            return rec;
-        }
-        return null;
-    }
-
     private async Task<bool> AddRecordToGitHub(RecordInfo record)
     {
         try
@@ -730,7 +585,6 @@ public class RecordsData : BasePlugin
     }
 }
 
-// --- Классы данных ---
 public class RecordInfo
 {
     public string PlayerName { get; set; } = "";
