@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>RecordsData</AssemblyName>
+    <RootNamespace>RecordsData</RootNamespace>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CounterStrikeSharp.API" Version="1.0.363" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.0" />
+  </ItemGroup>
+  <Target Name="CopyPluginFiles" AfterTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\build\addons\counterstrikesharp\plugins\$(AssemblyName)" />
+    <ItemGroup>
+      <BuildOutputFiles Include="$(TargetDir)*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(BuildOutputFiles)" DestinationFolder="$(MSBuildProjectDirectory)\build\addons\counterstrikesharp\plugins\$(AssemblyName)" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\config.json" DestinationFolder="$(MSBuildProjectDirectory)\build\cfg\plugins\$(AssemblyName)" Condition="Exists('$(MSBuildProjectDirectory)\config.json')" />
+  </Target>
+  <Target Name="CleanBuildFolders" AfterTargets="CopyPluginFiles">
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\bin" />
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\obj" />
+  </Target>
+</Project>

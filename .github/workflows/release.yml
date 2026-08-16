@@ -1,0 +1,101 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - '*'               # Tag (1.0.0)
+
+env:
+  PLUGIN_NAME: ${{ github.event.repository.name }}   # Plugin name
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Нужно для получения всех тегов и коммитов
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build with dotnet
+        run: |
+          dotnet restore
+          dotnet build --configuration Release --no-restore
+
+      - name: Create ZIP archive
+        run: |
+          cd build
+          zip -r "../${{ env.PLUGIN_NAME }}.zip" .
+          cd ..
+
+      - name: Generate release notes
+        id: release_notes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const currentTag = context.ref.replace('refs/tags/', '');
+            let previousTag = null;
+
+            // Получаем список всех тегов
+            const { data: tags } = await github.rest.repos.listTags({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+
+            // Находим предыдущий тег (предыдущий по времени, но не обязательно по семантике)
+            const currentIndex = tags.findIndex(tag => tag.name === currentTag);
+            if (currentIndex !== -1 && currentIndex + 1 < tags.length) {
+              previousTag = tags[currentIndex + 1].name;
+            }
+
+            let commitsSince = [];
+
+            if (previousTag) {
+              // Сравниваем предыдущий тег с текущим
+              const compare = await github.rest.repos.compareCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                base: previousTag,
+                head: currentTag
+              });
+              commitsSince = compare.data.commits;
+            } else {
+              // Первый релиз: берём все коммиты до текущего тега
+              const commits = await github.rest.repos.listCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: currentTag
+              });
+              commitsSince = commits.data;
+            }
+
+            let body = "## What's Changed\n";
+            if (commitsSince.length === 0) {
+              body += "No changes since previous release.\n";
+            } else {
+              for (const commit of commitsSince) {
+                const message = commit.commit.message.split('\n')[0];
+                const author = commit.author?.login || commit.commit.author?.name || 'unknown';
+                body += `- ${message} by @${author} in ${commit.html_url}\n`;
+              }
+            }
+            if (previousTag) {
+              body += `\n**Full Changelog**: [${previousTag}...${currentTag}](https://github.com/${context.repo.owner}/${context.repo.repo}/compare/${previousTag}...${currentTag})`;
+            } else {
+              body += `\n**Full Changelog**: [all commits up to ${currentTag}](https://github.com/${context.repo.owner}/${context.repo.repo}/commits/${currentTag})`;
+            }
+            core.setOutput('body', body);
+
+      - name: Create Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./${{ env.PLUGIN_NAME }}.zip
+          body: ${{ steps.release_notes.outputs.body }}

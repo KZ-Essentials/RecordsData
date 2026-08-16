@@ -1,0 +1,7 @@
+{
+  "database_path": "csgo/addons/cs2kz/data/cs2kz.sqlite3",
+  "github_repo": "",
+  "github_token": "",
+  "records_path": "data/records.json",
+  "players_path": "data/players.json"
+}
