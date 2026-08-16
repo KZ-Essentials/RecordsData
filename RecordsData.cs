@@ -16,7 +16,7 @@ namespace RecordsData;
 public class RecordsData : BasePlugin
 {
     public override string ModuleName => "RecordsData";
-    public override string ModuleVersion => "1.0.2";
+    public override string ModuleVersion => "1.0.3";
     public override string ModuleAuthor => "Local-KZ";
 
     private string _gitHubToken = string.Empty;
@@ -47,8 +47,6 @@ public class RecordsData : BasePlugin
 
         LoadLastSyncCreated();
         LoadPlayerCache();
-
-        Console.WriteLine("[RecordsData] Auto-sync on database changes is DISABLED. Use !sync manually.");
     }
 
     public override void Unload(bool hotReload)
