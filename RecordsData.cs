@@ -16,8 +16,8 @@ namespace RecordsData;
 public class RecordsData : BasePlugin
 {
     public override string ModuleName => "RecordsData";
-    public override string ModuleVersion => "1.0.3";
-    public override string ModuleAuthor => "Local-KZ";
+    public override string ModuleVersion => "1.0.4";
+    public override string ModuleAuthor => "KZ-Essentials";
 
     private string _gitHubToken = string.Empty;
     private string _gitHubRepoOwner = string.Empty;
@@ -45,8 +45,17 @@ public class RecordsData : BasePlugin
         AddCommand("css_sync", "Full sync all KZ records to GitHub", OnSyncCommand);
         AddCommand("sync", "Full sync all KZ records to GitHub", OnSyncCommand);
 
-        LoadLastSyncCreated();
-        LoadPlayerCache();
+        var timer = new System.Timers.Timer(5000);
+        timer.Elapsed += (sender, e) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            LoadLastSyncCreated();
+            LoadPlayerCache();
+            Console.WriteLine("[RecordsData] Database initialized after delay.");
+        };
+        timer.AutoReset = false;
+        timer.Start();
     }
 
     public override void Unload(bool hotReload)
